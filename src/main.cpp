@@ -7,10 +7,8 @@
 // for convenience
 using json = nlohmann::json;
 
-// For converting back and forth between radians and degrees.
-constexpr double pi() { return M_PI; }
-double deg2rad(double x) { return x * pi() / 180; }
-double rad2deg(double x) { return x * 180 / pi(); }
+//#define TWIDDLE   // Twiddle optimiser
+#define SPEED 30.0  // Target speed for simple 'P' controller.
 
 // Checks if the SocketIO event has JSON data.
 // If there is data the JSON object in string format will be returned,
@@ -35,6 +33,31 @@ int main()
   PID pid;
   // TODO: Initialize the pid variable.
 
+/*
+  // PID settings based on recommendations from 'pid_control_document.pdf' at http://georgegillard.com/documents.
+  pid.Init(0.10, 0.0000, 0.00); // 1) Long increasing oscillations - does not make it to first corner.
+  pid.Init(0.20, 0.0000, 0.00); // 2) Faster oscillations leaving track earlier.
+  pid.Init(0.40, 0.0000, 0.00); // 3) Even faster oscillations leaving track earlier - acrobatic style!
+  pid.Init(0.10, 0.0000, 1.00); // 4) Low P from above, plus D - first complete track circuit!
+  pid.Init(0.10, 0.0000, 2.00); // 5) Increased D - improved Average CTE from step above!
+  pid.Init(0.10, 0.0000, 3.00); // 6) Increased D - slightly better Average CTE from step above!
+  pid.Init(0.10, 0.0010, 3.00); // 7) Add I - more 'jumpy' but Average CTE is improved.
+  pid.Init(0.10, 0.0030, 3.00); // 8) Increase I - Average CTE worse.
+  pid.Init(0.10, 0.0020, 3.00); // 9) Decrease I - Average CTE closer to 7).
+  pid.Init(0.10, 0.0015, 3.00); // 10) Average I from 7) and 9) - Average CTE closer to 7).
+*/
+
+/*
+  // Final selection with best Average CTE across the track used for Twiddle input.
+  pid.Init(0.10, 0.0010, 3.00);
+*/
+#ifdef TWIDDLE
+  pid.Twiddle(0.05, 0.0001, 0.3, 150, 1650);
+#endif
+
+  // Final Twiddle parameters.
+  pid.Init(0.458088, 0.00119765, 4.65089);
+
   h.onMessage([&pid](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length, uWS::OpCode opCode) {
     // "42" at the start of the message means there's a websocket message event.
     // The 4 signifies a websocket message
@@ -49,7 +72,6 @@ int main()
           // j[1] is the data JSON object
           double cte = std::stod(j[1]["cte"].get<std::string>());
           double speed = std::stod(j[1]["speed"].get<std::string>());
-          double angle = std::stod(j[1]["steering_angle"].get<std::string>());
           double steer_value;
           /*
           * TODO: Calcuate steering value here, remember the steering value is
@@ -57,16 +79,22 @@ int main()
           * NOTE: Feel free to play around with the throttle and speed. Maybe use
           * another PID controller to control the speed!
           */
-          
-          // DEBUG
-          std::cout << "CTE: " << cte << " Steering Value: " << steer_value << std::endl;
+
+          pid.UpdateError(cte);
+          steer_value = fmax(-1.0, fmin(1.0, pid.TotalError()));
 
           json msgJson;
           msgJson["steering_angle"] = steer_value;
-          msgJson["throttle"] = 0.3;
+          msgJson["throttle"] = fmax(0.0, fmin(0.3, (SPEED-speed)*0.15));
           auto msg = "42[\"steer\"," + msgJson.dump() + "]";
-          std::cout << msg << std::endl;
           ws.send(msg.data(), msg.length(), uWS::OpCode::TEXT);
+
+#ifdef TWIDDLE
+          if (pid.TwiddleReset()) {
+            std::string msg = "42[\"reset\", {}]";
+            ws.send(msg.data(), msg.length(), uWS::OpCode::TEXT);
+          }
+#endif
         }
       } else {
         // Manual driving
